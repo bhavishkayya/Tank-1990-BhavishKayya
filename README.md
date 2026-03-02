@@ -1,5 +1,8 @@
 # 🚀 Tank 1990 Web Remake
 ### Classic Battle City recreated using **Phaser 3 + TypeScript**
+![Phaser](https://img.shields.io/badge/Phaser-3-blue)
+![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue)
+![Status](https://img.shields.io/badge/Build-Playable-success)
 
 <p align="center">
   <img src="https://bhavishkayya.space/game-project/gameplay.png" alt="Gameplay Screenshot" width="700"/>
