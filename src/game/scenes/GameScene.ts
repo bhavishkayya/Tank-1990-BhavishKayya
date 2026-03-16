@@ -69,6 +69,12 @@ export default class GameScene extends Phaser.Scene {
 
   private cursors!:  Phaser.Types.Input.Keyboard.CursorKeys;
   private fireKey!:  Phaser.Input.Keyboard.Key;
+  private wasd!: {
+    up: Phaser.Input.Keyboard.Key;
+    down: Phaser.Input.Keyboard.Key;
+    left: Phaser.Input.Keyboard.Key;
+    right: Phaser.Input.Keyboard.Key;
+  };
 
   private playerAlive        = true;
   private playerInvulnerable = false;
@@ -100,6 +106,17 @@ export default class GameScene extends Phaser.Scene {
   private playerSpeedBoost = false;
   private activeBulletSpeed  = BULLET_SPEED;
   private activeMoveMaxSpeed = PLAYER_MAX_SPEED;
+
+  private isMobile = false;
+  private touchMove = {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+  };
+
+  private sfxShoot?: Phaser.Sound.BaseSound;
+  private sfxMoveLoop?: Phaser.Sound.BaseSound;
 
   constructor() { super("GameScene"); }
 
@@ -205,6 +222,15 @@ export default class GameScene extends Phaser.Scene {
       stroke: "#000000", strokeThickness: 3,
     }).setScrollFactor(0).setDepth(200);
 
+    // Sounds (guarded so game still works if audio files are missing or decode fails)
+    const audioCache = this.cache.audio;
+    if (audioCache.exists("shoot_tank")) {
+      this.sfxShoot = this.sound.add("shoot_tank", { volume: 0.6 });
+    }
+    if (audioCache.exists("moving_tank")) {
+      this.sfxMoveLoop = this.sound.add("moving_tank", { loop: true, volume: 0.35 });
+    }
+
     this.spawnPoints = this.buildSpawnPoints(map);
 
     this.enemiesToSpawn = levelCfg.enemies;
@@ -218,7 +244,33 @@ export default class GameScene extends Phaser.Scene {
     this.physics.add.collider(this.enemies, this.player);
 
     this.cursors = this.input.keyboard!.createCursorKeys();
+    this.wasd = {
+      up: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W),
+      down: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S),
+      left: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
+      right: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D)
+    };
     this.fireKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+
+    const device = this.sys.game.device;
+    this.isMobile =
+      device.os.android ||
+      device.os.iOS ||
+      // some Phaser builds expose these separately
+      (device.os as any).iphone ||
+      (device.os as any).ipad ||
+      (device.os as any).ipod;
+
+    if (this.isMobile) {
+      this.input.addPointer(2);
+      this.createMobileControls();
+    } else {
+      this.input.on("pointerdown", () => {
+        if (this.playerAlive && !this.fireCooldown) {
+          this.fireBullet();
+        }
+      });
+    }
 
     this.time.addEvent({
       delay: 2500, loop: true,
@@ -286,10 +338,24 @@ export default class GameScene extends Phaser.Scene {
 
 
   private handlePlayerMovement() {
-    const L = this.cursors.left?.isDown;
-    const R = this.cursors.right?.isDown;
-    const U = this.cursors.up?.isDown;
-    const D = this.cursors.down?.isDown;
+    const useTouch = this.isMobile;
+
+    const L =
+      this.cursors.left?.isDown ||
+      this.wasd.left.isDown ||
+      (useTouch && this.touchMove.left);
+    const R =
+      this.cursors.right?.isDown ||
+      this.wasd.right.isDown ||
+      (useTouch && this.touchMove.right);
+    const U =
+      this.cursors.up?.isDown ||
+      this.wasd.up.isDown ||
+      (useTouch && this.touchMove.up);
+    const D =
+      this.cursors.down?.isDown ||
+      this.wasd.down.isDown ||
+      (useTouch && this.touchMove.down);
     const moving = L || R || U || D;
 
     this.moveSpeed = Phaser.Math.Clamp(
@@ -306,9 +372,72 @@ export default class GameScene extends Phaser.Scene {
     if (vx !== 0 || vy !== 0) {
       const v = new Phaser.Math.Vector2(vx, vy).normalize().scale(this.moveSpeed);
       this.player.setVelocity(v.x, v.y);
+      if (this.sfxMoveLoop && !this.sfxMoveLoop.isPlaying) {
+        this.sfxMoveLoop.play();
+      }
     } else if (!moving) {
       this.player.setVelocity(0, 0);
+      if (this.sfxMoveLoop && this.sfxMoveLoop.isPlaying) {
+        this.sfxMoveLoop.stop();
+      }
     }
+  }
+
+  private createMobileControls() {
+    const cam = this.cameras.main;
+    const w = cam.width;
+    const h = cam.height;
+
+    const baseY = h - 90;
+    const rightX = w - 90;
+    const btnRadius = 30;
+
+    const makeDirButton = (
+      x: number,
+      y: number,
+      dir: "up" | "down" | "left" | "right"
+    ) => {
+      const btn = this.add.circle(x, y, btnRadius, 0x000000, 0.22)
+        .setStrokeStyle(2, 0xffffff, 0.6)
+        .setScrollFactor(0)
+        .setDepth(1000)
+        .setInteractive({ useHandCursor: false });
+
+      const setState = (down: boolean) => {
+        this.touchMove[dir] = down;
+        btn.setFillStyle(0x000000, down ? 0.35 : 0.22);
+      };
+
+      btn.on("pointerdown", (p: Phaser.Input.Pointer) => {
+        if (!p.isPrimary && !p.isDown) return;
+        setState(true);
+      });
+      btn.on("pointerup", () => setState(false));
+      btn.on("pointerupoutside", () => setState(false));
+      btn.on("pointerout", () => setState(false));
+      return btn;
+    };
+
+    makeDirButton(rightX, baseY - 60, "up");
+    makeDirButton(rightX, baseY + 60, "down");
+    makeDirButton(rightX - 60, baseY, "left");
+    makeDirButton(rightX + 60, baseY, "right");
+
+    const shootRadius = 50;
+    const shootX = 90;
+    const shootY = h - 80;
+
+    const shootBtn = this.add.circle(shootX, shootY, shootRadius, 0xff4444, 0.32)
+      .setStrokeStyle(3, 0xffffff, 0.8)
+      .setScrollFactor(0)
+      .setDepth(1000)
+      .setInteractive({ useHandCursor: false });
+
+    shootBtn.on("pointerdown", () => {
+      if (this.playerAlive && !this.fireCooldown) {
+        this.fireBullet();
+      }
+    });
   }
 
    private fireBullet() {
@@ -336,6 +465,58 @@ export default class GameScene extends Phaser.Scene {
     this.fireCooldown = true;
     this.time.delayedCall(280, () => { this.fireCooldown = false; });
     this.createMuzzleFlash(angleRad);
+    this.sfxShoot?.play();
+  }
+
+  private fireBulletAtAngle(pointer: Phaser.Input.Pointer) {
+    if (this.playerBulletActive || this.fireCooldown) return;
+
+    // Calculate angle from player to mouse position
+    const dx = pointer.worldX - this.player.x;
+    const dy = pointer.worldY - this.player.y;
+    const rawAngleRad = Math.atan2(dy, dx);
+    const rawAngleDeg = Phaser.Math.RadToDeg(rawAngleRad);
+
+    // Snap to the 4 tank directions so the tank never tilts diagonally
+    const cardinalAnglesDeg = [0, 90, 180, -90];
+    let closestDeg = cardinalAnglesDeg[0];
+    let minDiff = Infinity;
+    for (const a of cardinalAnglesDeg) {
+      const diff = Math.abs(Phaser.Math.Angle.WrapDegrees(rawAngleDeg - a));
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestDeg = a;
+      }
+    }
+
+    const snappedRad = Phaser.Math.DegToRad(closestDeg);
+
+    // Rotate tank only to the nearest cardinal direction
+    this.player.setAngle(closestDeg + 90);
+
+    // Calculate bullet spawn position
+    const bx = this.player.x + Math.cos(snappedRad) * 16;
+    const by = this.player.y + Math.sin(snappedRad) * 16;
+
+    const bullet = this.physics.add.image(bx, by, "bullet") as Phaser.Physics.Arcade.Image;
+    bullet.setScale(0.12).setDepth(6).setRotation(snappedRad);
+    bullet.setData("isPlayerBullet", true);
+    bullet.setData("lifetime", 0);
+
+    const body = bullet.body as Phaser.Physics.Arcade.Body;
+    body.setAllowGravity(false);
+    body.setSize(8, 8, true);
+    body.setVelocity(
+      Math.cos(snappedRad) * this.activeBulletSpeed,
+      Math.sin(snappedRad) * this.activeBulletSpeed
+    );
+
+    this.bullets.add(bullet);
+    this.playerBulletActive = true;
+    this.fireCooldown = true;
+    this.time.delayedCall(280, () => { this.fireCooldown = false; });
+    this.createMuzzleFlash(snappedRad);
+    this.sfxShoot?.play();
   }
 
   
@@ -559,6 +740,7 @@ export default class GameScene extends Phaser.Scene {
     this.cameras.main.flash(180, 200, 0, 0);
 
     this.cameras.main.shake(220, 0.018);
+    this.sfxHitPlayer?.play();
 
     if (!this.playerHitFlashing) {
       this.playerHitFlashing = true;
@@ -894,6 +1076,8 @@ export default class GameScene extends Phaser.Scene {
       duration: 1800, ease: "Power2",
       onComplete: () => msg.destroy(),
     });
+
+    this.sfxPowerUp?.play();
 
     switch (kind) {
       case "star":

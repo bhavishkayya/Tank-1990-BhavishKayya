@@ -41,6 +41,10 @@ export default class PreloadScene extends Phaser.Scene {
     this.load.image("muzzleflash", "assets/muzzle_flash.png");
     this.load.image("tileset",     "assets/Tileset.png");
 
+    // Audio: stored under public/sounds/
+    this.load.audio("shoot_tank",  "sounds/shoot_tank.mp3");
+    this.load.audio("moving_tank", "sounds/moving_tank.mp3");
+
     this.load.tilemapTiledJSON("level1", "assets/level1.json");
     this.load.tilemapTiledJSON("level2", "assets/level2.json"); // ← ADDED
     this.load.tilemapTiledJSON("level3", "assets/level3.json"); // ← ADDED (ready for when you make it)
