@@ -62,10 +62,9 @@ export default class GameScene extends Phaser.Scene {
   private mapHeightPx = 0;
 
   private player!:       Phaser.Physics.Arcade.Sprite;
-  private eagle!:        Phaser.Physics.Arcade.Sprite;
   private shieldSprite?: Phaser.GameObjects.Sprite;
-
-  private eagleZone!: Phaser.Geom.Rectangle;
+  private eagleLayer!: Phaser.Tilemaps.TilemapLayer;
+  private eaglePos   = new Phaser.Math.Vector2();
 
   private cursors!:  Phaser.Types.Input.Keyboard.CursorKeys;
   private fireKey!:  Phaser.Input.Keyboard.Key;
@@ -120,6 +119,9 @@ export default class GameScene extends Phaser.Scene {
   private sfxHitPlayer?: Phaser.Sound.BaseSound;
   private sfxPowerUp?: Phaser.Sound.BaseSound;
 
+  // FIX 3: track whether move-sound is intentionally on
+  private moveSoundPlaying = false;
+
   constructor() { super("GameScene"); }
 
   
@@ -143,11 +145,16 @@ export default class GameScene extends Phaser.Scene {
     this.playerInvulnerable = false;
     this.playerHitFlashing  = false;
     this.moveSpeed          = 0;
+    this.moveSoundPlaying   = false;
     this.enemyTimers.clear();
+    
 
+    
     const levelCfg = LEVEL_CONFIGS[this.currentLevel] ?? LEVEL_CONFIGS[0];
 
-    const map     = this.make.tilemap({ key: levelCfg.mapKey });
+    const map = this.make.tilemap({ key: levelCfg.mapKey });
+
+  this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => map.destroy());
     const tileset = map.addTilesetImage("tank_tiles", "tileset");
 
     if (!tileset) {
@@ -159,17 +166,37 @@ export default class GameScene extends Phaser.Scene {
       return; 
     }
 
-    map.createLayer("grass", tileset, 0, 0);
-    this.breakableLayer = map.createLayer("breakable_brick", tileset, 0, 0)!;
-    this.steelLayer     = map.createLayer("steel_wall",      tileset, 0, 0)!;
+  map.createLayer("grass", tileset, 0, 0);
+this.breakableLayer = map.createLayer("breakable_brick", tileset, 0, 0)!;
+this.steelLayer     = map.createLayer("steel_wall",      tileset, 0, 0)!;
 
-    this.breakableLayer.setCollisionByExclusion([-1]);
-    this.steelLayer.setCollisionByExclusion([-1]);
-    this.breakableLayer.setDepth(2);
-    this.steelLayer.setDepth(2);
+this.breakableLayer.setCollisionByExclusion([-1]);
+this.steelLayer.setCollisionByExclusion([-1]);
+this.breakableLayer.setDepth(2);
+this.steelLayer.setDepth(2);
 
-    this.mapWidthPx  = map.widthInPixels;
-    this.mapHeightPx = map.heightInPixels;
+this.mapWidthPx  = map.widthInPixels;
+this.mapHeightPx = map.heightInPixels;
+
+
+
+const rawEagleLayer = map.createLayer("eagle_base", tileset, 0, 0);
+if (!rawEagleLayer) {
+  console.error("[GameScene] 'eagle_base' layer not found! Check layer name in Tiled JSON.");
+  this.eaglePos.set(80, this.mapHeightPx - 64);
+} else {
+  this.eagleLayer = rawEagleLayer;
+  this.eagleLayer.setCollisionByExclusion([-1]);
+  this.eagleLayer.setDepth(3);
+  const eagleTiles = this.eagleLayer.filterTiles((t: Phaser.Tilemaps.Tile) => t.index !== -1);
+  if (eagleTiles.length > 0) {
+    const t = eagleTiles[0];
+    this.eaglePos.set(t.pixelX + map.tileWidth / 2, t.pixelY + map.tileHeight / 2);
+  } else {
+    this.eaglePos.set(80, this.mapHeightPx - 64);
+  }
+}
+
 
     this.physics.world.setBounds(0, 0, this.mapWidthPx, this.mapHeightPx);
     this.cameras.main.setBounds(0, 0, this.mapWidthPx, this.mapHeightPx);
@@ -194,27 +221,7 @@ export default class GameScene extends Phaser.Scene {
     pb.setAllowGravity(false);
     pb.setMaxVelocity(200, 200);
 
-    const eaglePos = this.getEaglePosition();
-
-    this.eagle = this.physics.add.sprite(eaglePos.x, eaglePos.y, "player");
-    this.eagle.setScale(TANK_SCALE)
-              .setTint(0xffdd00)   
-              .setImmovable(true)
-              .setDepth(6);
-    (this.eagle.body as Phaser.Physics.Arcade.Body).setAllowGravity(false);
-    (this.eagle.body as Phaser.Physics.Arcade.Body).setSize(TANK_BODY_SIZE, TANK_BODY_SIZE, true);
-
-    this.add.text(eaglePos.x, eaglePos.y - 18, "BASE", {
-      fontSize: "9px", fontStyle: "bold",
-      color: "#ffdd00", stroke: "#000000", strokeThickness: 2,
-    }).setOrigin(0.5).setDepth(7);
-
-    this.eagleZone = new Phaser.Geom.Rectangle(
-      eaglePos.x - 32,
-      eaglePos.y - 32,
-      64,
-      64
-    );
+    
 
     this.cameras.main.startFollow(this.player, true, 0.09, 0.09);
     this.cameras.main.setDeadzone(160, 120);
@@ -224,19 +231,34 @@ export default class GameScene extends Phaser.Scene {
       stroke: "#000000", strokeThickness: 3,
     }).setScrollFactor(0).setDepth(200);
 
-    // Sounds (guarded so game still works if audio files are missing or decode fails)
+    // ── Sounds ───────────────────────────────────────────────────────────────
     const audioCache = this.cache.audio;
+
     if (audioCache.exists("shoot_tank")) {
       this.sfxShoot = this.sound.add("shoot_tank", { volume: 0.6 });
     }
+
+    // FIX 2: always create a fresh instance so it starts silent on each scene restart
     if (audioCache.exists("moving_tank")) {
       this.sfxMoveLoop = this.sound.add("moving_tank", { loop: true, volume: 0.35 });
     }
+
     if (audioCache.exists("hit_player")) {
       this.sfxHitPlayer = this.sound.add("hit_player", { volume: 0.7 });
     }
     if (audioCache.exists("powerup")) {
       this.sfxPowerUp = this.sound.add("powerup", { volume: 0.7 });
+    }
+
+    // FIX 3: Background music — reuse existing instance across scene restarts
+    if (audioCache.exists("background_music")) {
+      let bgm = this.sound.get("background_music") as Phaser.Sound.BaseSound | null;
+      if (!bgm) {
+        bgm = this.sound.add("background_music", { loop: true, volume: 0.50 });
+      }
+      if (!bgm.isPlaying) {
+        bgm.play();
+      }
     }
 
     this.spawnPoints = this.buildSpawnPoints(map);
@@ -245,10 +267,8 @@ export default class GameScene extends Phaser.Scene {
 
     this.physics.add.collider(this.player,  this.breakableLayer);
     this.physics.add.collider(this.player,  this.steelLayer);
-    this.physics.add.collider(this.player,  this.eagle);
     this.physics.add.collider(this.enemies, this.breakableLayer);
     this.physics.add.collider(this.enemies, this.steelLayer);
-    this.physics.add.collider(this.enemies, this.eagle);
     this.physics.add.collider(this.enemies, this.player);
 
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -264,7 +284,6 @@ export default class GameScene extends Phaser.Scene {
     this.isMobile =
       device.os.android ||
       device.os.iOS ||
-      // some Phaser builds expose these separately
       (device.os as any).iphone ||
       (device.os as any).ipad ||
       (device.os as any).ipod;
@@ -279,6 +298,8 @@ export default class GameScene extends Phaser.Scene {
         }
       });
     }
+
+    
 
     this.time.addEvent({
       delay: 2500, loop: true,
@@ -311,6 +332,8 @@ export default class GameScene extends Phaser.Scene {
       if (Phaser.Input.Keyboard.JustDown(this.fireKey)) this.fireBullet();
     } else {
       this.player.setVelocity(0, 0);
+      // FIX 2: ensure move sound stops immediately when player dies
+      this.stopMoveSound();
     }
 
     this.enemies.children.each((obj) => {
@@ -344,6 +367,22 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  // FIX 2: centralised helpers so we never leave the sound running by accident
+  private startMoveSound() {
+    if (this.moveSoundPlaying) return;
+    if (this.sfxMoveLoop && !this.sfxMoveLoop.isPlaying) {
+      this.sfxMoveLoop.play();
+      this.moveSoundPlaying = true;
+    }
+  }
+
+  private stopMoveSound() {
+    if (!this.moveSoundPlaying) return;
+    if (this.sfxMoveLoop?.isPlaying) {
+      this.sfxMoveLoop.stop();
+    }
+    this.moveSoundPlaying = false;
+  }
 
   private handlePlayerMovement() {
     const useTouch = this.isMobile;
@@ -380,14 +419,20 @@ export default class GameScene extends Phaser.Scene {
     if (vx !== 0 || vy !== 0) {
       const v = new Phaser.Math.Vector2(vx, vy).normalize().scale(this.moveSpeed);
       this.player.setVelocity(v.x, v.y);
-      if (this.sfxMoveLoop && !this.sfxMoveLoop.isPlaying) {
-        this.sfxMoveLoop.play();
+
+      // FIX 2: check actual velocity magnitude so wall-blocked movement doesn't loop sound
+      const body = this.player.body as Phaser.Physics.Arcade.Body;
+      const actuallyMoving =
+        Math.abs(body.velocity.x) > 2 || Math.abs(body.velocity.y) > 2;
+      if (actuallyMoving) {
+        this.startMoveSound();
+      } else {
+        this.stopMoveSound();
       }
-    } else if (!moving) {
+    } else {
+      // no directional input — velocity is being dragged down
       this.player.setVelocity(0, 0);
-      if (this.sfxMoveLoop && this.sfxMoveLoop.isPlaying) {
-        this.sfxMoveLoop.stop();
-      }
+      this.stopMoveSound();
     }
   }
 
@@ -538,6 +583,14 @@ export default class GameScene extends Phaser.Scene {
         return true;
       }
 
+      const eagleTileHit = this.getTileInArea(bullet, this.eagleLayer);
+      if (eagleTileHit) {
+        this.killPlayerBullet(bullet);
+        this.createExplosion(this.eaglePos.x, this.eaglePos.y);
+        this.gameOver();
+        return true;
+      }
+
       const enemyList = this.enemies.children.entries.slice() as Phaser.Physics.Arcade.Sprite[];
       for (const enemy of enemyList) {
         if (!enemy.active || !bullet.active) continue;
@@ -546,7 +599,6 @@ export default class GameScene extends Phaser.Scene {
         }
       }
 
-     
       if (bullet.active) {
         const ebList = this.enemyBullets.children.entries.slice() as Phaser.Physics.Arcade.Image[];
         for (const eb of ebList) {
@@ -593,13 +645,10 @@ export default class GameScene extends Phaser.Scene {
         }
       }
 
-      const bulletInEagleZone = this.eagleZone.contains(bullet.x, bullet.y);
-      const bulletNearSprite  = this.eagle.active &&
-        Phaser.Math.Distance.Between(bullet.x, bullet.y, this.eagle.x, this.eagle.y) < 32;
-
-      if (bulletInEagleZone || bulletNearSprite) {
+      const eagleTileHit = this.getTileInArea(bullet, this.eagleLayer);
+      if (eagleTileHit) {
         this.killEnemyBullet(bullet);
-        this.createExplosion(this.eagle.x, this.eagle.y);
+        this.createExplosion(this.eaglePos.x, this.eaglePos.y);
         this.gameOver();
         return true;
       }
@@ -675,8 +724,6 @@ export default class GameScene extends Phaser.Scene {
       if (k === "enemy_basic")      this.score += 100;
       else if (k === "enemy_fast")  this.score += 200;
       else if (k === "enemy_heavy") this.score += 300;
-      
-      
       this.registry.set("score", this.score);
       this.destroyEnemy(enemy);
     } else {
@@ -694,9 +741,11 @@ export default class GameScene extends Phaser.Scene {
     if (!this.playerAlive || this.playerInvulnerable) return;
 
     this.cameras.main.flash(180, 200, 0, 0);
-
     this.cameras.main.shake(220, 0.018);
     this.sfxHitPlayer?.play();
+
+    // FIX 2: stop move sound on hit
+    this.stopMoveSound();
 
     if (!this.playerHitFlashing) {
       this.playerHitFlashing = true;
@@ -716,14 +765,12 @@ export default class GameScene extends Phaser.Scene {
     }
 
     this.lives--;
-
     this.registry.set("lives", this.lives);
-    if (this.lives <= 0) {
 
+    if (this.lives <= 0) {
       this.time.delayedCall(200, () => this.gameOver());
       return;
     }
-
 
     this.playerAlive = false;
     this.time.delayedCall(220, () => {
@@ -776,10 +823,9 @@ export default class GameScene extends Phaser.Scene {
 
     const baseType = this.getEnemyForLevel();
 
-
-    const speedMult    = 1 + this.currentLevel * 0.20;          // +20% per level
-    const fireRateMult = 1 - this.currentLevel * 0.15;          // -15% delay per level
-    const MIN_FIRE_RATE = 900;                                   // never below 900ms
+    const speedMult    = 1 + this.currentLevel * 0.20;
+    const fireRateMult = 1 - this.currentLevel * 0.15;
+    const MIN_FIRE_RATE = 900;
 
     const type: EnemyType = {
       ...baseType,
@@ -876,7 +922,6 @@ export default class GameScene extends Phaser.Scene {
       enemy.setData("dirTimer",  0);
     }
 
-    
     const targetDir = (roll: number): Direction =>
       roll < 7 ? this.dirTowardPlayer(enemy) : this.dirTowardEagle(enemy);
 
@@ -893,14 +938,12 @@ export default class GameScene extends Phaser.Scene {
     let dirTimer = (enemy.getData("dirTimer") as number) + this.game.loop.delta;
     if (dist < CHASE_RANGE) {
       if (dirTimer > 1200) {
-
         dir = targetDir(Phaser.Math.Between(0, 9));
         enemy.setData("direction", dir);
         dirTimer = 0;
       }
     } else {
       if (dirTimer > 2000 || Phaser.Math.Between(0, 300) === 0) {
-
         dir = targetDir(Phaser.Math.Between(0, 9));
         enemy.setData("direction", dir);
         dirTimer = 0;
@@ -923,8 +966,8 @@ export default class GameScene extends Phaser.Scene {
   }
 
   private dirTowardEagle(enemy: Phaser.Physics.Arcade.Sprite): Direction {
-    const dx = this.eagle.x - enemy.x;
-    const dy = this.eagle.y - enemy.y;
+    const dx = this.eaglePos.x - enemy.x;
+    const dy = this.eaglePos.y - enemy.y;
     return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up");
   }
 
@@ -1067,7 +1110,6 @@ export default class GameScene extends Phaser.Scene {
 
       case "extraLife":
         this.lives++;
-        // Change 1: keep registry in sync
         this.registry.set("lives", this.lives);
         break;
 
@@ -1093,10 +1135,9 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
-    private respawnPlayer() {
+  private respawnPlayer() {
     this.playerBulletActive = false;
     this.fireCooldown       = false;
-    // Change 6: reset all power-up upgrades on respawn (classic Tank 1990 rule)
     this.activeBulletSpeed  = BULLET_SPEED;
     this.activeMoveMaxSpeed = PLAYER_MAX_SPEED;
     this.playerSpeedBoost   = false;
@@ -1104,11 +1145,12 @@ export default class GameScene extends Phaser.Scene {
     this.player.setActive(true).setVisible(true);
     this.player.setVelocity(0, 0);
     this.player.setAngle(0);
-    this.player.clearTint();   // ensure no leftover red flash tint
+    this.player.clearTint();
     (this.player.body as Phaser.Physics.Arcade.Body).reset(this.playerSpawn.x, this.playerSpawn.y);
     this.playerAlive        = true;
     this.playerInvulnerable = true;
     this.playerHitFlashing  = false;
+    this.moveSoundPlaying   = false; // FIX 2: reset flag on respawn
 
     this.shieldSprite?.destroy();
     this.shieldSprite = this.add.sprite(this.player.x, this.player.y, "shield").setDepth(10);
@@ -1142,13 +1184,11 @@ export default class GameScene extends Phaser.Scene {
     this.time.delayedCall(55, () => { if (flash.scene) flash.destroy(); });
   }
 
-   private gameOver() {
+  private gameOver() {
     if (this.gameEnded) return;
     this.gameEnded = true;
-    if (this.eagle?.active) {
-      this.createExplosion(this.eagle.x, this.eagle.y);
-      this.eagle.destroy();
-    }
+    this.stopMoveSound(); // FIX 2
+    this.createExplosion(this.eaglePos.x, this.eaglePos.y);
     this.physics.pause();
     this.registry.set("currentLevel", 0);
     this.registry.set("score",        0);
@@ -1158,6 +1198,7 @@ export default class GameScene extends Phaser.Scene {
 
   private levelComplete() {
     this.gameEnded = true;
+    this.stopMoveSound(); // FIX 2
     this.physics.pause();
     const nextLevel = this.currentLevel + 1;
     if (nextLevel < LEVEL_CONFIGS.length) {
@@ -1173,25 +1214,42 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  // FIX 1: showEndScreen — mobile uses tap-anywhere, desktop uses ENTER
   private showEndScreen(title: string, color: string, autoAdvance: boolean) {
     const cx = this.cameras.main.centerX;
     const cy = this.cameras.main.centerY;
+
     this.add.rectangle(cx, cy, 480, 150, 0x000000, 0.85)
       .setScrollFactor(0).setDepth(199).setOrigin(0.5);
+
     this.add.text(cx, cy - 26, title, {
       fontSize: "28px", color, stroke: "#000000", strokeThickness: 4,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
-    this.add.text(cx, cy + 26,
-      autoAdvance ? "PRESS ENTER FOR NEXT LEVEL" : "PRESS ENTER TO RESTART",
-      { fontSize: "16px", color: "#ffffff" }
-    ).setOrigin(0.5).setScrollFactor(0).setDepth(200);
-    this.input.keyboard!
-      .addKey(Phaser.Input.Keyboard.KeyCodes.ENTER)
-      .once("down", () => this.scene.restart());
+
+    // FIX 1: different prompt text and input method per platform
+    const promptText = this.isMobile
+      ? (autoAdvance ? "TAP ANYWHERE FOR NEXT LEVEL" : "TAP ANYWHERE TO RESTART")
+      : (autoAdvance ? "PRESS ENTER FOR NEXT LEVEL"  : "PRESS ENTER TO RESTART");
+
+    this.add.text(cx, cy + 26, promptText, {
+      fontSize: "16px", color: "#ffffff",
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+
+    if (this.isMobile) {
+      // small delay prevents the tap that dismissed a mobile shoot button
+      // from immediately triggering the restart
+      this.time.delayedCall(400, () => {
+        this.input.once("pointerdown", () => this.scene.restart());
+      });
+    } else {
+      this.input.keyboard!
+        .addKey(Phaser.Input.Keyboard.KeyCodes.ENTER)
+        .once("down", () => this.scene.restart());
+    }
   }
 
   private buildSpawnPoints(map: Phaser.Tilemaps.Tilemap): Phaser.Math.Vector2[] {
-     const W = map.widthInPixels;
+    const W = map.widthInPixels;
     const H = map.heightInPixels;
 
     const candidates: Phaser.Math.Vector2[] = [
@@ -1215,47 +1273,26 @@ export default class GameScene extends Phaser.Scene {
     return candidates;
   }
 
-  private getEaglePosition(): Phaser.Math.Vector2 {
-    switch (this.currentLevel) {
-      case 0: 
-      case 1: 
-        return new Phaser.Math.Vector2(80, this.mapHeightPx - 64);
-
-      case 2: 
-        return new Phaser.Math.Vector2(
-          this.mapWidthPx  / 2,
-          this.mapHeightPx / 2
-        );
-
-      default:
-        return new Phaser.Math.Vector2(80, this.mapHeightPx - 64);
-    }
-  }
-
-
-   private getMaxAlive(): number {
+  private getMaxAlive(): number {
     return 4 + this.currentLevel; // 4 / 5 / 6
   }
 
   private getEnemyForLevel(): EnemyType {
-    const [basic, fast, heavy] = ENEMY_TYPES; // destructure by index for clarity
+    const [basic, fast, heavy] = ENEMY_TYPES;
     const roll = Phaser.Math.Between(0, 9);
 
     switch (this.currentLevel) {
-      case 0: // Level 1 — 70% Basic, 30% Fast, 0% Heavy
+      case 0:
         return roll < 7 ? basic : fast;
-
-      case 1: // Level 2 — 40% Basic, 30% Fast, 30% Heavy
+      case 1:
         if (roll < 4) return basic;
         if (roll < 7) return fast;
         return heavy;
-
-      case 2: // Level 3 — 20% Basic, 30% Fast, 50% Heavy
+      case 2:
         if (roll < 2) return basic;
         if (roll < 5) return fast;
         return heavy;
-
-      default: // fallback for any extra levels
+      default:
         return Phaser.Utils.Array.GetRandom(ENEMY_TYPES) as EnemyType;
     }
   }
