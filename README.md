@@ -16,7 +16,7 @@
 
 ## 🌐 Play Online
 👉 **Live Game:**  
-https://bhavishkayya.space/Tank-1990-Bhavish/tank-1990/
+https://bhavishkayya.space/Tank-1990-BhavishKayya-main/Tank-1990-BhavishKayya-main/
 
 ---
 
